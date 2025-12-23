@@ -1,0 +1,13 @@
+Python 3.11.9
+requests==2.31.0
+beautifulsoup4==4.12.3
+selenium==4.15.2
+numpy==1.26.4
+sentence-transformers==2.7.0 # UPDATED: Using a modern, stable version to fix compilation issues
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.5.3
+python-multipart==0.0.6
+python-dotenv==1.0.0
+groq>=0.37.0
+hf-xet # Added for potentially faster/more stable model downloading (Xet Storage)
