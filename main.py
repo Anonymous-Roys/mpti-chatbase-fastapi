@@ -15,7 +15,6 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="The user's message to the chatbot.")
     session_id: Optional[str] = Field(None, description="Session ID for conversation context.")
     conversation_id: Optional[str] = Field(None, description="Conversation ID.")
-    # Other fields can be added but ignored for now
 
 class Link(BaseModel):
     url: str
@@ -38,45 +37,51 @@ class ChatResponse(BaseModel):
     nlp_analysis: Dict[str, Any] = Field({}, description="NLP analysis results.")
 
 # --- FastAPI Initialization ---
-# Initialize the FastAPI app
 app = FastAPI(
     title="RAG Chatbot API",
     description="A Retrieval-Augmented Generation service for answering questions based on scraped website data.",
     version="1.0.0"
 )
 
-# Enable CORS for frontend applications (like the WordPress plugin)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for simplicity in this example
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize the RAG System globally
+# Global RAG System instance (initialized lazily)
 rag_system: Optional[RAGSystem] = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Initializes the RAGSystem and loads embeddings on startup."""
+    """Minimal startup - RAG system loads on first request."""
     global rag_system
-    print("Initializing RAG System...")
-    # NOTE: Set the name of the website here for the LLM prompt.
-    rag_system = RAGSystem(website_name="MPTI Ghana website")
-    if not rag_system.is_ready:
-        print("RAG System failed to initialize. Check if JSON files exist.")
-    else:
-        print("RAG System is ready to serve queries.")
+    print("Server starting up...")
+    print("RAG System will be initialized on first request to save memory.")
+    # Don't initialize RAG system here - save memory!
+    rag_system = None
 
 def get_rag_system() -> RAGSystem:
+    """
+    Lazy-loads the RAG system only when first needed.
+    This saves memory on startup and during health checks.
+    """
     global rag_system
     if rag_system is None:
-        print("Lazy-loading RAG system...")
-        rag_system = RAGSystem(website_name="MPTI Ghana website")
-        if not rag_system.is_ready:
-            raise RuntimeError("RAG system failed to initialize")
+        print("Initializing RAG System (lazy load)...")
+        try:
+            rag_system = RAGSystem(website_name="MPTI Ghana website")
+            if not rag_system.is_ready:
+                raise RuntimeError("RAG system initialized but not ready (missing embeddings or chunks)")
+            print(f"RAG System loaded successfully. Chunks: {len(rag_system.chunks)}")
+        except Exception as e:
+            print(f"Failed to initialize RAG System: {e}")
+            raise RuntimeError(f"RAG system initialization failed: {e}")
     return rag_system
+
 # --- Endpoints ---
 @app.get("/", summary="Welcome Endpoint")
 async def welcome():
@@ -84,75 +89,72 @@ async def welcome():
     return {
         "message": "Welcome to the RAG Chatbot API.",
         "api_docs": "/docs",
-        "health_check": "/health"
+        "health_check": "/health",
+        "note": "RAG system loads on first chat request to optimize memory usage."
     }
 
 @app.get("/health", summary="System Health Check")
 async def health_check():
-    """Checks if the RAG system is initialized and ready."""
-    if not rag_system:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG System is not initialized. Check logs for startup errors."
-        )
-    if not rag_system.is_ready:
-        raise HTTPException(
-            status_code=503,
-            detail="RAG System is initialized but not ready (embeddings or chunks missing)."
-        )
+    """
+    Checks system health without loading the RAG system.
+    This is lightweight and won't trigger memory-intensive operations.
+    """
+    # Check if Groq API key is configured
     if not os.getenv("GROQ_API_KEY"):
         raise HTTPException(
             status_code=500,
             detail="Groq API Key not configured in environment variables."
         )
 
+    # Check if data files exist
+    chunks_exist = os.path.exists("chunks.json")
+    embeddings_exist = os.path.exists("embeddings.json")
+    
     return {
         "status": "Healthy",
-        "chunks_loaded": len(rag_system.chunks),
+        "rag_system_loaded": rag_system is not None,
+        "chunks_file_exists": chunks_exist,
+        "embeddings_file_exists": embeddings_exist,
+        "chunks_loaded": len(rag_system.chunks) if rag_system else 0,
         "llm_service": "Groq (llama-3.3-70b-versatile)",
-        "message": "System is running and ready to handle queries."
+        "message": "System is ready. RAG will load on first chat request."
     }
-# @app.get("/health")
-# async def health_check():
-#     try:
-#         rs = get_rag_system()
-#     except Exception as e:
-#         raise HTTPException(status_code=503, detail=str(e))
-
-#     if not os.getenv("GROQ_API_KEY"):
-#         raise HTTPException(status_code=500, detail="Groq API key missing")
-
-#     return {
-#         "status": "Healthy",
-#         "chunks_loaded": len(rs.chunks),
-#     }
 
 @app.get("/stats", summary="Data Statistics")
 async def get_stats():
-    """Returns statistics about the loaded processed data."""
-    if not rag_system or not rag_system.is_ready:
-         raise HTTPException(
+    """
+    Returns statistics about the loaded data.
+    This will trigger lazy loading if RAG system isn't initialized yet.
+    """
+    try:
+        rs = get_rag_system()
+    except Exception as e:
+        raise HTTPException(
             status_code=503,
-            detail="RAG System is not ready. Cannot retrieve statistics."
+            detail=f"Cannot retrieve statistics - RAG System unavailable: {e}"
         )
-    return rag_system.get_stats()
+    
+    return rs.get_stats()
 
 @app.post("/chat", response_model=ChatResponse, summary="Chat Endpoint")
 async def chat_with_rag_system(request: ChatRequest):
     """
-    Processes a user message by retrieving relevant context and generating a reply
-    using the RAG pattern (Retrieval Augmented Generation).
+    Processes a user message using RAG pattern.
+    Lazy-loads the RAG system on first request.
     """
-    if not rag_system or not rag_system.is_ready:
-         raise HTTPException(
+    # Lazy load RAG system
+    try:
+        rs = get_rag_system()
+    except Exception as e:
+        raise HTTPException(
             status_code=503,
-            detail="RAG System is currently unavailable. Please try again later."
+            detail=f"RAG System is currently unavailable: {e}"
         )
-        
+    
     message = request.message
     session_id = request.session_id or request.conversation_id or "default"
 
-    if not message:
+    if not message or not message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
     try:
@@ -160,70 +162,65 @@ async def chat_with_rag_system(request: ChatRequest):
         start_time = time.time()
         
         # 1. Retrieval
-        sources, chunks = rag_system.retrieve_context(message, 3)
+        sources, chunks = rs.retrieve_context(message, top_k=3)
         
         if not chunks:
-            # If no context is found, try to generate a fallback answer
-            reply = "I don't have that information. Please check the website directly."
+            reply = "I don't have that information in my knowledge base. Please check the website directly or rephrase your question."
         else:
             # 2. Generation
-            reply = rag_system.generate_answer(message, chunks)
+            reply = rs.generate_answer(message, chunks)
 
         response_time = time.time() - start_time
 
-        # 3. Return response with plugin-expected format
+        # 3. Return response
         return ChatResponse(
             reply=reply,
             session_id=session_id,
             conversation_id=session_id,
-            intent="information_request",  # Dummy
-            confidence=0.8,  # Dummy
-            sentiment="neutral",  # Dummy
+            intent="information_request",
+            confidence=0.85 if chunks else 0.3,
+            sentiment="neutral",
             source="fastapi_backend",
             response_time=response_time,
             ctas=[],
-            external_links=[{"url": url, "text": url} for url in sources],
+            external_links=[Link(url=url, text=url) for url in sources[:3]],  # Limit to 3 sources
             suggestions=[],
             follow_up_questions=[],
-            nlp_analysis={"sentiment": "neutral", "entities": []}
+            nlp_analysis={"sentiment": "neutral", "entities": [], "sources_count": len(sources)}
         )
 
     except Exception as e:
-        print(f"An error occurred during message processing: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
+        print(f"Error during message processing: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal Server Error: {str(e)}"
+        )
 
-# @app.post("/chat", response_model=ChatResponse)
-# async def chat_with_rag_system(request: ChatRequest):
-#     try:
-#         rs = get_rag_system()
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=503,
-#             detail=f"RAG System is currently unavailable: {e}"
-#         )
-
-#     message = request.message
-#     session_id = request.session_id or request.conversation_id or "default"
-
-#     if not message:
-#         raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
-#     # retrieval
-#     sources, chunks = rs.retrieve_context(message, 3)
-
-#     if not chunks:
-#         reply = "I don't have that information. Please check the website directly."
-#     else:
-#         reply = rs.generate_answer(message, chunks)
-
-#     return ChatResponse(
-#         reply=reply,
-#         session_id=session_id,
-#         conversation_id=session_id,
-#     )
+@app.get("/memory", summary="Memory Usage Stats")
+async def memory_stats():
+    """
+    Returns current memory usage statistics.
+    Useful for monitoring and debugging memory issues.
+    """
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        return {
+            "memory_mb": round(memory_info.rss / 1024 / 1024, 2),
+            "memory_percent": round(process.memory_percent(), 2),
+            "rag_system_loaded": rag_system is not None,
+            "chunks_count": len(rag_system.chunks) if rag_system else 0
+        }
+    except ImportError:
+        return {
+            "error": "psutil not installed. Run: pip install psutil",
+            "rag_system_loaded": rag_system is not None
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    # Use $PORT environment variable if available (e.g., on Render)
+    # Use $PORT environment variable (required by Render)
     port = int(os.getenv("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
