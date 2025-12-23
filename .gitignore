@@ -1,5 +1,4 @@
 .env
 pycache/
 *.pyc
-*.json
 /venv
