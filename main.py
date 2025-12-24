@@ -203,6 +203,16 @@ async def memory_stats():
 
 if __name__ == "__main__":
     import uvicorn
-    # Use $PORT environment variable (required by Render)
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # EXPLICITLY print the port - Render scans for this
+    print(f"🚀 Starting FastAPI on port {port}")
+    print(f"📡 Server will be available at: http://0.0.0.0:{port}")
+    print(f"🔗 Health check: http://0.0.0.0:{port}/health")
+    print(f"Starting server on port {port}")  # This helps Render detect the port
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        # Reduce workers to save memory
+        workers=1  # CHANGE FROM 2 to 1
+    )
