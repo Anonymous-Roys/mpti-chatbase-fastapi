@@ -65,22 +65,14 @@ async def startup_event():
     rag_system = None
 
 def get_rag_system() -> RAGSystem:
-    """
-    Lazy-loads the RAG system only when first needed.
-    This saves memory on startup and during health checks.
-    """
     global rag_system
     if rag_system is None:
-        print("Initializing RAG System (lazy load)...")
-        try:
-            rag_system = RAGSystem(website_name="MPTI Ghana website")
-            if not rag_system.is_ready:
-                raise RuntimeError("RAG system initialized but not ready (missing embeddings or chunks)")
-            print(f"RAG System loaded successfully. Chunks: {len(rag_system.chunks)}")
-        except Exception as e:
-            print(f"Failed to initialize RAG System: {e}")
-            raise RuntimeError(f"RAG system initialization failed: {e}")
+        print("Starting RAG system initialization...")
+        # Add timeout to initialization
+        rag_system = RAGSystem(website_name="MPTI Ghana website")
+        print(f"RAG System loaded. Chunks: {len(rag_system.chunks)}")
     return rag_system
+
 
 # --- Endpoints ---
 @app.get("/", summary="Welcome Endpoint")
@@ -93,31 +85,21 @@ async def welcome():
         "note": "RAG system loads on first chat request to optimize memory usage."
     }
 
-@app.get("/health", summary="System Health Check")
+
+@app.get("/health")
 async def health_check():
-    """
-    Checks system health without loading the RAG system.
-    This is lightweight and won't trigger memory-intensive operations.
-    """
     # Check if Groq API key is configured
     if not os.getenv("GROQ_API_KEY"):
-        raise HTTPException(
-            status_code=500,
-            detail="Groq API Key not configured in environment variables."
-        )
-
-    # Check if data files exist
+        raise HTTPException(status_code=500, detail="Groq API Key not configured.")
+    # Lightweight file checks
     chunks_exist = os.path.exists("chunks.json")
     embeddings_exist = os.path.exists("embeddings.json")
-    
     return {
-        "status": "Healthy",
-        "rag_system_loaded": rag_system is not None,
+        "status": "Ready" if (chunks_exist and embeddings_exist) else "Waiting for data",
+        "rag_system_loaded": rag_system is not None,  # Just check, don't load
         "chunks_file_exists": chunks_exist,
         "embeddings_file_exists": embeddings_exist,
-        "chunks_loaded": len(rag_system.chunks) if rag_system else 0,
-        "llm_service": "Groq (llama-3.3-70b-versatile)",
-        "message": "System is ready. RAG will load on first chat request."
+        "llm_service": "Groq"
     }
 
 @app.get("/stats", summary="Data Statistics")
